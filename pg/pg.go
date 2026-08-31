@@ -1,6 +1,7 @@
 // Package pg holds the estate's shared Postgres plumbing: environment-driven
-// DSN construction, pgxpool construction, and the migration runner every
-// service uses to bring its own schema up to date at startup.
+// DSN construction, pgxpool construction, read/write splitting across a primary
+// and a read replica, and the migration runner every service uses to bring its
+// own schema up to date at startup.
 package pg
 
 import (

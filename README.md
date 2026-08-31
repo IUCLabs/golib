@@ -11,7 +11,7 @@ imports it inherits them.
 
 | Import | What it does |
 | --- | --- |
-| `git.unkin.net/unkin/golib/pg` | Postgres: DSN from the environment, pgxpool construction, and the estate's migration runner. |
+| `git.unkin.net/unkin/golib/pg` | Postgres: DSN from the environment, pgxpool construction, read/write splitting across a primary and a replica, and the estate's migration runner. |
 | `git.unkin.net/unkin/golib/pg/pgtest` | A throwaway Postgres container for a consumer's own `_test.go` files. Test-only. |
 
 ### pg
@@ -64,6 +64,111 @@ rather than on the first query. `pg.NewMigrated` does that and then migrates.
 
 `pg.LockKey(name)` exposes the derivation, so a service migrating off a
 hardcoded key can assert the two agree before switching over.
+
+#### Read/write splitting
+
+`pg.Cluster` wraps a primary pool and an optional read-replica pool:
+
+```go
+primaryDSN, replicaDSN, err := pg.ClusterDSNsFromEnv("ENCAPI_")
+if err != nil {
+    return err
+}
+db, err := pg.NewCluster(ctx, pg.ClusterConfig{
+    PrimaryDSN: primaryDSN,
+    ReplicaDSN: replicaDSN,
+    Logger:     log,
+})
+if err != nil {
+    return err
+}
+defer db.Close()
+
+if err := db.Migrate(ctx, migrations.FS, pg.MigrateOptions{LockName: "encapi-migrations"}); err != nil {
+    return err
+}
+
+rows, err := db.Read().Query(ctx, "SELECT id, name FROM nodes")   // replica when healthy
+tag, err := db.Write().Exec(ctx, "UPDATE nodes SET ...")          // always the primary
+row := db.Primary().QueryRow(ctx, "SELECT ... WHERE id = $1", id) // read-your-writes
+```
+
+| Call | Goes to |
+| --- | --- |
+| `Write()` | The primary, always. |
+| `Read()` | The replica when one is configured and healthy; the primary otherwise. |
+| `Primary()` | The primary. Same pool as `Write()`, named for reads that must not be stale. |
+
+**Routing is explicit; nothing inspects SQL.** Deciding from the statement text
+gets it wrong in both directions: a CTE with an `INSERT` in it reads as a
+`SELECT`, and `SELECT ... FOR UPDATE` takes row locks a replica cannot grant.
+The caller knows which it wants, so the caller picks.
+
+**Replica lag is real.** A replica serves a slightly stale snapshot, so a read
+that has to observe a write this process just made goes to `Primary()`. The
+usual shape is a handler that writes and then re-reads what it wrote, or a
+redirect straight into a `GET` of the row just created — both need the primary.
+Everything else (list endpoints, dashboards, reports, background aggregation)
+can take the replica.
+
+**A missing replica is not an error.** With `ReplicaDSN` empty, `Read()` returns
+the primary and the `Cluster` is an ordinary single-pool handle, so a service
+can use `Cluster` unconditionally and let the deployment decide whether reads
+split. A `ReplicaDSN` equal to `PrimaryDSN` does the same rather than opening a
+second pool to the same place.
+
+**An unhealthy replica falls back.** The `Cluster` keeps a small circuit over
+the replica:
+
+- A replica that fails its startup ping does not fail startup; reads begin on
+  the primary and move over once it answers a probe.
+- `db.ReportReplicaError(err)` — pass the error from a query run on the pool
+  `Read()` handed out — trips the circuit, and reads move to the primary.
+- While tripped, `Read()` issues no probes until the backoff window expires; the
+  next `Read()` after that pays for one probe that either promotes the replica
+  or doubles the window. The window runs from `ReplicaRetryMin` to
+  `ReplicaRetryMax` (5s to 2m by default) and resets on recovery. A healthy
+  replica is never probed at all, so the split costs nothing on the read path.
+- Reporting is advisory. A caller that never reports still routes correctly; it
+  just does not react to a replica that dies mid-flight.
+
+**Migrations always target the primary.** `Cluster.Migrate` runs through
+`Write()`. A replica is physically read-only, and a schema change has to
+originate on the primary to reach the replica at all.
+
+`pg.ClusterDSNsFromEnv(prefix)` returns both connection strings. The primary
+follows `DSNFromEnv` exactly. The replica resolves, highest first:
+
+1. `<PREFIX>DATABASE_RO_URL` — used verbatim.
+2. `DATABASE_RO_URL` — likewise.
+3. `<PREFIX>DB_RO_HOST`, or bare `DB_RO_HOST` — the primary's port, user,
+   password, database and sslmode with that host substituted.
+4. Nothing set — an empty replica DSN, so the `Cluster` runs single-pool.
+
+Nothing is derived. The read-only host is never rewritten out of the primary's,
+because a wrong guess silently sends reads somewhere unintended. Setting only
+`DB_RO_HOST` while the primary comes from a whole `DATABASE_URL` is an error,
+not a guess: the fields to substitute into are not known.
+
+CloudNativePG publishes exactly the two endpoints this expects — `<cluster>-rw`
+routes to the primary and `<cluster>-ro` to the replicas — so a Deployment names
+both:
+
+```yaml
+env:
+  - name: ENCAPI_DBHOST
+    value: encapi-db-rw
+  - name: ENCAPI_DB_RO_HOST
+    value: encapi-db-ro
+  - name: ENCAPI_DBNAME
+    value: encapi
+  - name: ENCAPI_DBUSER
+    valueFrom: { secretKeyRef: { name: encapi-db-app, key: username } }
+  - name: ENCAPI_DBPASS
+    valueFrom: { secretKeyRef: { name: encapi-db-app, key: password } }
+```
+
+Dropping `ENCAPI_DB_RO_HOST` turns the split off without a code change.
 
 ### pgtest
 

@@ -2,6 +2,7 @@ package pg_test
 
 import (
 	"context"
+	"errors"
 	"net/url"
 	"strings"
 	"testing"
@@ -165,6 +166,58 @@ func TestDSNFromEnv_ConnectsToRealPostgres(t *testing.T) {
 		t.Fatalf("New(%q): %v", built, err)
 	}
 	pool.Close()
+}
+
+// A Cluster against a real server. One container plays both roles — what is
+// under test is the routing, not Postgres' own replication — so the read pool
+// is the same server reached through a second, distinct DSN.
+func TestCluster_AgainstRealPostgres(t *testing.T) {
+	ctx := testCtx(t)
+	dsn := pgtest.MustStartPostgres(ctx, t)
+
+	c, err := pg.NewCluster(ctx, pg.ClusterConfig{
+		PrimaryDSN: dsn,
+		ReplicaDSN: dsn + "&application_name=reader",
+		// Short enough that the recovery probe lands inside the test.
+		ReplicaRetryMin: 10 * time.Millisecond,
+		ReplicaRetryMax: 10 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("NewCluster: %v", err)
+	}
+	t.Cleanup(c.Close)
+
+	if c.Read() == c.Write() {
+		t.Fatal("a configured, healthy replica must be a distinct pool")
+	}
+	if err := c.Migrate(ctx, migrations, pg.MigrateOptions{LockName: "golib-pg-cluster-integration"}); err != nil {
+		t.Fatalf("Migrate: %v", err)
+	}
+	if _, err := c.Write().Exec(ctx, "INSERT INTO widgets (name) VALUES ($1)", "sprocket"); err != nil {
+		t.Fatalf("insert on the primary: %v", err)
+	}
+
+	var n int
+	if err := c.Read().QueryRow(ctx, "SELECT count(*) FROM widgets").Scan(&n); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if err := c.Primary().QueryRow(ctx, "SELECT count(*) FROM widgets").Scan(&n); err != nil {
+		t.Fatalf("read-your-writes: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("widgets has %d rows, want 1", n)
+	}
+
+	// A reported replica failure moves reads to the primary; a replica that
+	// still answers earns them back on the next probe.
+	c.ReportReplicaError(errors.New("simulated replica failure"))
+	if c.Read() != c.Write() {
+		t.Fatal("a reported replica failure must move reads to the primary")
+	}
+	time.Sleep(20 * time.Millisecond)
+	if c.Read() == c.Write() {
+		t.Fatal("a replica that answers its probe must get reads back")
+	}
 }
 
 // dsnParts is the container DSN split back into the fields DSNFromEnv reads.

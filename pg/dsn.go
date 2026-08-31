@@ -32,6 +32,10 @@ var (
 	fieldPass = dsnField{"DBPASS", "PGPASSWORD"}
 	fieldName = dsnField{"DBNAME", "PGDATABASE"}
 	fieldSSL  = dsnField{"DBSSL", "PGSSLMODE"}
+
+	// The replica host has no libpq counterpart; the second name is the bare
+	// variable a prefixed lookup falls back to.
+	fieldROHost = dsnField{"DB_RO_HOST", "DB_RO_HOST"}
 )
 
 // DSNFromEnv builds a libpq/pgx connection string from the environment.
@@ -58,35 +62,103 @@ var (
 // User and database name have no default: DSNFromEnv reports an error naming
 // the variables it looked at rather than connecting somewhere unintended.
 func DSNFromEnv(prefix string) (string, error) {
-	if v := os.Getenv(prefix + "DATABASE_URL"); v != "" {
+	if v := urlFromEnv(prefix, "DATABASE_URL"); v != "" {
 		return v, nil
 	}
-	if v := os.Getenv("DATABASE_URL"); v != "" {
-		return v, nil
+	p, err := connPartsFromEnv(prefix)
+	if err != nil {
+		return "", err
+	}
+	return p.dsn(), nil
+}
+
+// ClusterDSNsFromEnv resolves the primary and replica connection strings for a
+// Cluster. The primary follows DSNFromEnv exactly; the replica resolves,
+// highest first:
+//
+//  1. <PREFIX>DATABASE_RO_URL — used verbatim.
+//  2. DATABASE_RO_URL — likewise.
+//  3. <PREFIX>DB_RO_HOST, or bare DB_RO_HOST — the primary's port, user,
+//     password, database and sslmode with that host substituted, which is the
+//     CNPG shape where the <cluster>-rw and <cluster>-ro services differ only
+//     in hostname.
+//  4. Nothing set: an empty replica DSN, so the Cluster runs single-pool.
+//
+// Nothing is derived. A deployment that wants split reads names the read-only
+// endpoint; the replica host is never rewritten out of the primary's, because a
+// wrong guess silently sends reads somewhere unintended.
+//
+// A host-only replica variable set alongside a primary given as a whole URL is
+// an error rather than a guess: the fields to substitute into are not known.
+func ClusterDSNsFromEnv(prefix string) (primary, replica string, err error) {
+	replica = urlFromEnv(prefix, "DATABASE_RO_URL")
+	roHost := lookup(prefix, fieldROHost, "")
+
+	if u := urlFromEnv(prefix, "DATABASE_URL"); u != "" {
+		if replica == "" && roHost != "" {
+			return "", "", fmt.Errorf("%s%s is set but the primary comes from a connection URL: set %sDATABASE_RO_URL instead",
+				prefix, fieldROHost.suffix, prefix)
+		}
+		return u, replica, nil
 	}
 
-	host := lookup(prefix, fieldHost, defaultHost)
+	p, err := connPartsFromEnv(prefix)
+	if err != nil {
+		return "", "", err
+	}
+	primary = p.dsn()
+	if replica != "" || roHost == "" {
+		return primary, replica, nil
+	}
+	p.host = roHost
+	return primary, p.dsn(), nil
+}
+
+// urlFromEnv reads a whole-connection-string variable: prefixed, then bare.
+func urlFromEnv(prefix, name string) string {
+	if v := os.Getenv(prefix + name); v != "" {
+		return v
+	}
+	return os.Getenv(name)
+}
+
+// connParts is one resolved set of connection fields.
+type connParts struct {
+	host string
+	port int
+	user string
+	pass string
+	name string
+	ssl  string
+}
+
+func (p connParts) dsn() string { return DSN(p.host, p.port, p.user, p.pass, p.name, p.ssl) }
+
+// connPartsFromEnv resolves levels 3 to 5 of DSNFromEnv's precedence.
+func connPartsFromEnv(prefix string) (connParts, error) {
 	portStr := lookup(prefix, fieldPort, strconv.Itoa(defaultPort))
-	user := lookup(prefix, fieldUser, "")
-	pass := lookup(prefix, fieldPass, "")
-	name := lookup(prefix, fieldName, "")
-	ssl := lookup(prefix, fieldSSL, defaultSSLMode)
-
 	port, err := strconv.Atoi(portStr)
 	if err != nil {
-		return "", fmt.Errorf("invalid %s%s: %w", prefix, fieldPort.suffix, err)
+		return connParts{}, fmt.Errorf("invalid %s%s: %w", prefix, fieldPort.suffix, err)
 	}
 	if port < 1 || port > 65535 {
-		return "", fmt.Errorf("invalid %s%s: port %d out of range", prefix, fieldPort.suffix, port)
+		return connParts{}, fmt.Errorf("invalid %s%s: port %d out of range", prefix, fieldPort.suffix, port)
 	}
-	if user == "" {
-		return "", fmt.Errorf("no database user: set %s%s or %s", prefix, fieldUser.suffix, fieldUser.libpq)
+	p := connParts{
+		host: lookup(prefix, fieldHost, defaultHost),
+		port: port,
+		user: lookup(prefix, fieldUser, ""),
+		pass: lookup(prefix, fieldPass, ""),
+		name: lookup(prefix, fieldName, ""),
+		ssl:  lookup(prefix, fieldSSL, defaultSSLMode),
 	}
-	if name == "" {
-		return "", fmt.Errorf("no database name: set %s%s or %s", prefix, fieldName.suffix, fieldName.libpq)
+	if p.user == "" {
+		return connParts{}, fmt.Errorf("no database user: set %s%s or %s", prefix, fieldUser.suffix, fieldUser.libpq)
 	}
-
-	return DSN(host, port, user, pass, name, ssl), nil
+	if p.name == "" {
+		return connParts{}, fmt.Errorf("no database name: set %s%s or %s", prefix, fieldName.suffix, fieldName.libpq)
+	}
+	return p, nil
 }
 
 // DSN renders the estate's standard connection string. User and password are

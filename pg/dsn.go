@@ -92,12 +92,12 @@ func DSNFromEnv(prefix string) (string, error) {
 // an error rather than a guess: the fields to substitute into are not known.
 func ClusterDSNsFromEnv(prefix string) (primary, replica string, err error) {
 	replica = urlFromEnv(prefix, "DATABASE_RO_URL")
-	roHost := lookup(prefix, fieldROHost, "")
+	roHost, roHostVar := lookupNamed(prefix, fieldROHost, "")
 
 	if u := urlFromEnv(prefix, "DATABASE_URL"); u != "" {
 		if replica == "" && roHost != "" {
-			return "", "", fmt.Errorf("%s%s is set but the primary comes from a connection URL: set %sDATABASE_RO_URL instead",
-				prefix, fieldROHost.suffix, prefix)
+			return "", "", fmt.Errorf("%s is set but the primary comes from a connection URL: set %sDATABASE_RO_URL instead",
+				roHostVar, prefix)
 		}
 		return u, replica, nil
 	}
@@ -187,11 +187,19 @@ func hostPort(host string, port int) string {
 
 // lookup resolves one field: prefixed variable, then libpq variable, then def.
 func lookup(prefix string, f dsnField, def string) string {
+	v, _ := lookupNamed(prefix, f, def)
+	return v
+}
+
+// lookupNamed resolves one field and reports the variable the value came from,
+// empty when the default was used. An error message names the variable the
+// operator actually set rather than the prefixed form they may never have used.
+func lookupNamed(prefix string, f dsnField, def string) (value, name string) {
 	if v := os.Getenv(prefix + f.suffix); v != "" {
-		return v
+		return v, prefix + f.suffix
 	}
 	if v := os.Getenv(f.libpq); v != "" {
-		return v
+		return v, f.libpq
 	}
-	return def
+	return def, ""
 }

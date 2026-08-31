@@ -348,6 +348,8 @@ func TestClusterDSNsFromEnv_Errors(t *testing.T) {
 		prefix  string
 		env     map[string]string
 		wantSub string
+		// notSub, when set, must not appear in the error.
+		notSub string
 	}{
 		{
 			name:    "a broken primary is reported",
@@ -364,7 +366,21 @@ func TestClusterDSNsFromEnv_Errors(t *testing.T) {
 				"APP_DATABASE_URL": "postgres://u:p@rw/db",
 				"APP_DB_RO_HOST":   "db-ro",
 			},
-			wantSub: "set APP_DATABASE_RO_URL instead",
+			wantSub: "APP_DB_RO_HOST is set but the primary comes from a connection URL: set APP_DATABASE_RO_URL instead",
+		},
+		{
+			// The same ambiguity, but the host came from the bare variable the
+			// prefixed lookup falls back to. The error must name the variable
+			// the operator actually set: naming APP_DB_RO_HOST sends them
+			// looking for something that is not in their environment.
+			name:   "the bare replica host variable is named, not the prefixed one",
+			prefix: "APP_",
+			env: map[string]string{
+				"APP_DATABASE_URL": "postgres://u:p@rw/db",
+				"DB_RO_HOST":       "db-ro",
+			},
+			wantSub: "DB_RO_HOST is set but",
+			notSub:  "APP_DB_RO_HOST",
 		},
 		{
 			name:   "a broken port is reported when the replica is resolved",
@@ -384,6 +400,9 @@ func TestClusterDSNsFromEnv_Errors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tc.wantSub) {
 				t.Fatalf("error %q does not mention %q", err, tc.wantSub)
+			}
+			if tc.notSub != "" && strings.Contains(err.Error(), tc.notSub) {
+				t.Fatalf("error %q names %q, which is not the variable that was set", err, tc.notSub)
 			}
 		})
 	}

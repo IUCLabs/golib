@@ -59,6 +59,10 @@ type Cluster struct {
 
 // NewCluster opens the primary and, when configured, the replica.
 //
+// The replica pool is built first. pgxpool connects lazily, so that dials
+// nothing and costs nothing, but it does parse the replica DSN: a mistyped one
+// fails before the primary is opened, leaving no pool behind to clean up.
+//
 // A primary that cannot be reached is fatal: the service has nowhere to write.
 // A replica that cannot be reached is not — the Cluster starts with reads on
 // the primary and promotes the replica once it answers a probe, which is the
@@ -66,31 +70,45 @@ type Cluster struct {
 //
 // The caller owns the Cluster and must Close it.
 func NewCluster(ctx context.Context, cfg ClusterConfig) (*Cluster, error) {
+	replica, err := openReplica(ctx, cfg)
+	if err != nil {
+		return nil, err
+	}
 	primary, err := New(ctx, cfg.PrimaryDSN, cfg.Logger)
 	if err != nil {
+		if replica != nil {
+			replica.Close()
+		}
 		return nil, err
 	}
-	c, err := newCluster(ctx, primary, cfg)
-	if err != nil {
-		primary.Close()
-		return nil, err
-	}
-	return c, nil
+	return newCluster(ctx, primary, replica, cfg), nil
 }
 
-// newCluster attaches the replica half to an already-open primary pool.
-func newCluster(ctx context.Context, primary *pgxpool.Pool, cfg ClusterConfig) (*Cluster, error) {
-	log := logger(cfg.Logger)
-	c := &Cluster{primary: primary}
+// openReplica builds the replica pool, or nil when the Cluster is to run
+// single-pool: no replica configured, or one pointed at the primary, which is
+// answered with the pool already open rather than a second one to the same
+// place.
+func openReplica(ctx context.Context, cfg ClusterConfig) (*pgxpool.Pool, error) {
 	if cfg.ReplicaDSN == "" || cfg.ReplicaDSN == cfg.PrimaryDSN {
-		log.Debug("postgres cluster in single-pool mode, reads go to the primary")
-		return c, nil
+		return nil, nil
 	}
-
 	replica, err := pgxpool.New(ctx, cfg.ReplicaDSN)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres replica: %w", err)
 	}
+	return replica, nil
+}
+
+// newCluster joins an already-open primary to an already-open replica, nil for
+// single-pool mode, and probes the replica once to set its starting health.
+func newCluster(ctx context.Context, primary, replica *pgxpool.Pool, cfg ClusterConfig) *Cluster {
+	log := logger(cfg.Logger)
+	c := &Cluster{primary: primary}
+	if replica == nil {
+		log.Debug("postgres cluster in single-pool mode, reads go to the primary")
+		return c
+	}
+
 	c.replica = replica
 	c.health = newReplicaCircuit(replica, log, cfg.ReplicaRetryMin, cfg.ReplicaRetryMax)
 	if err := replica.Ping(ctx); err != nil {
@@ -98,7 +116,7 @@ func newCluster(ctx context.Context, primary *pgxpool.Pool, cfg ClusterConfig) (
 	} else {
 		log.Debug("postgres replica pool ready", "host", replica.Config().ConnConfig.Host)
 	}
-	return c, nil
+	return c
 }
 
 // Write returns the primary pool. Every statement that changes data, takes row

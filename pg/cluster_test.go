@@ -211,10 +211,14 @@ func TestNewCluster_SinglePoolModes(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			c, err := newCluster(shortCtx(t), lazyPool(t, deadDSN), tc.cfg)
+			replica, err := openReplica(shortCtx(t), tc.cfg)
 			if err != nil {
-				t.Fatalf("newCluster: %v", err)
+				t.Fatalf("openReplica: %v", err)
 			}
+			if replica != nil {
+				t.Fatal("no replica pool may be opened in single-pool mode")
+			}
+			c := newCluster(shortCtx(t), lazyPool(t, deadDSN), replica, tc.cfg)
 			if c.replica != nil {
 				t.Fatal("expected single-pool mode")
 			}
@@ -228,14 +232,12 @@ func TestNewCluster_SinglePoolModes(t *testing.T) {
 // A replica that will not answer must degrade to primary reads, not fail
 // startup: the service can still serve everything, just without the split.
 func TestNewCluster_UnreachableReplicaStartsDegraded(t *testing.T) {
-	c, err := newCluster(shortCtx(t), lazyPool(t, deadDSN), ClusterConfig{
-		PrimaryDSN: deadDSN,
-		ReplicaDSN: deadReplicaDSN,
-		Logger:     testLogger(),
-	})
+	cfg := ClusterConfig{PrimaryDSN: deadDSN, ReplicaDSN: deadReplicaDSN, Logger: testLogger()}
+	replica, err := openReplica(shortCtx(t), cfg)
 	if err != nil {
-		t.Fatalf("newCluster: %v", err)
+		t.Fatalf("openReplica: %v", err)
 	}
+	c := newCluster(shortCtx(t), lazyPool(t, deadDSN), replica, cfg)
 	t.Cleanup(func() { c.replica.Close() })
 	if c.replica == nil {
 		t.Fatal("the replica pool must still be opened")
@@ -248,19 +250,29 @@ func TestNewCluster_UnreachableReplicaStartsDegraded(t *testing.T) {
 	}
 }
 
-func TestNewCluster_RejectsAnUnparseableReplicaDSN(t *testing.T) {
-	_, err := newCluster(shortCtx(t), lazyPool(t, deadDSN), ClusterConfig{
+// An unparseable replica DSN must be reported without the primary ever being
+// opened, so the failure path has no pool to leak. The primary here is
+// unreachable too: had it been opened first, its ping would have failed and
+// masked the replica error.
+func TestNewCluster_RejectsAnUnparseableReplicaDSNBeforeOpeningThePrimary(t *testing.T) {
+	c, err := NewCluster(shortCtx(t), ClusterConfig{
 		PrimaryDSN: deadDSN,
 		ReplicaDSN: "://not a dsn",
 	})
 	if err == nil {
+		c.Close()
 		t.Fatal("expected an error for an unparseable replica DSN")
 	}
 	if !strings.Contains(err.Error(), "connect postgres replica") {
 		t.Fatalf("error %q does not identify the failing step", err)
 	}
+	if strings.Contains(err.Error(), "ping postgres") {
+		t.Fatalf("the primary was opened before the replica DSN was parsed: %v", err)
+	}
 }
 
+// The mirror case: the replica DSN parses, so its pool exists when the primary
+// turns out to be unreachable, and NewCluster must close it on the way out.
 func TestNewCluster_PropagatesPrimaryFailure(t *testing.T) {
 	c, err := NewCluster(shortCtx(t), ClusterConfig{PrimaryDSN: deadDSN, ReplicaDSN: deadReplicaDSN})
 	if err == nil {

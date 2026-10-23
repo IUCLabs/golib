@@ -114,7 +114,10 @@ func TestKernelForget(t *testing.T) {
 
 func TestKernelWrongSizedKeyIsReplaced(t *testing.T) {
 	k := open(t)
-	sealed, _ := k.Seal([]byte("secret"))
+	sealed, err := k.Seal([]byte("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, err := unix.AddKey("user", k.desc, []byte("short"), unix.KEY_SPEC_USER_KEYRING); err != nil {
 		t.Fatal(err)
 	}
@@ -177,6 +180,28 @@ func TestKernelExternallyRevokedKeyIsReplaced(t *testing.T) {
 	}
 	if got, err := k.Unseal(sealed); err != nil || string(got) != "secret" {
 		t.Fatalf("Unseal = %q, %v", got, err)
+	}
+}
+
+// Another application's dead key in the user keyring is not ours to unlink.
+func TestKernelForeignDeadKeySurvivesOpen(t *testing.T) {
+	open(t) // skips where keyctl is blocked
+	id, err := unix.AddKey("user", fmt.Sprintf("golib-test-foreign:%s:%d", t.Name(), os.Getpid()), []byte("x"), unix.KEY_SPEC_USER_KEYRING)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { unlink(id) })
+	if _, err := unix.KeyctlInt(unix.KEYCTL_REVOKE, id, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	k, err := Open(fmt.Sprintf("golib-test:%s:%d:fresh", t.Name(), os.Getpid()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k.Forget() })
+	// Unlinking an id that is no longer linked fails with ENOENT.
+	if _, err := unix.KeyctlInt(unix.KEYCTL_UNLINK, id, unix.KEY_SPEC_USER_KEYRING, 0, 0); err != nil {
+		t.Fatalf("foreign dead key was unlinked: %v", err)
 	}
 }
 

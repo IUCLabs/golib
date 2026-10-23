@@ -8,9 +8,7 @@ COVER_MIN := 90
 # Packages excluded from the coverage gate: pgtest exists only to be imported
 # from other repos' _test.go files, and is itself exercised by the
 # container-backed integration tests, which the gate deliberately does not run.
-# keyring_linux.go is the keyctl syscall layer; its tests skip wherever seccomp
-# blocks keyctl (CI containers), so it cannot count towards the gate.
-COVER_EXCLUDE := /pg/pgtest/|/keyring/keyring_linux.go
+COVER_EXCLUDE := /pg/pgtest/
 
 .PHONY: all build test test-all cover vet fmt lint tidy clean pre-commit patch minor major _tag
 

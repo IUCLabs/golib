@@ -80,7 +80,7 @@ func (k *Keyring) lookup() (int, []byte, error) {
 	id, err := unix.KeyctlSearch(unix.KEY_SPEC_USER_KEYRING, "user", k.desc, 0)
 	if err != nil {
 		if missing(err) {
-			return 0, nil, fmt.Errorf("%w: %v", ErrKeyUnavailable, err)
+			return 0, nil, fmt.Errorf("%w: %w", ErrKeyUnavailable, err)
 		}
 		return 0, nil, fmt.Errorf("keyring: search %q: %w", k.desc, err)
 	}
@@ -109,7 +109,7 @@ func (k *Keyring) getOrCreate() ([]byte, error) {
 		// An unusable key of our description blocks the exclusive link.
 		if id != 0 {
 			unlink(id)
-		} else {
+		} else if errors.Is(err, unix.EKEYREVOKED) || errors.Is(err, unix.EKEYEXPIRED) {
 			purgeDead()
 		}
 		key, err = k.create()
@@ -147,8 +147,9 @@ func (k *Keyring) create() ([]byte, error) {
 	return key, nil
 }
 
-// purgeDead unlinks revoked and expired keys from the user keyring. Their
-// description can no longer be read, so all of them go; they are inert.
+// purgeDead unlinks every revoked or expired key in the user keyring: a dead key
+// cannot be described, so ours cannot be singled out. Call it only after the
+// search hit a dead key of our description.
 func purgeDead() {
 	buf := make([]byte, 256)
 	for {

@@ -22,9 +22,9 @@ const (
 
 const reset = "\x1b[0m"
 
-// Enabled reports whether output to f should be coloured. Auto follows jq:
-// f must be a terminal, NO_COLOR (https://no-color.org) must be unset or empty
-// and TERM must not be "dumb".
+// Enabled reports whether output to f should be coloured. Auto requires f to
+// be a terminal and NO_COLOR (https://no-color.org) to be unset or empty, as jq
+// does, and additionally TERM not to be "dumb".
 func Enabled(mode Mode, f *os.File) bool {
 	switch mode {
 	case Always:
@@ -53,28 +53,28 @@ const (
 	jqKey
 )
 
-// jqColours returns jq's palette with JQ_COLORS applied the way jq parses it:
-// up to eight colon-separated SGR codes override the defaults in order, a
-// trailing empty field is ignored, and anything but digits and ';' discards the
-// whole variable.
+// jqColours returns jq's palette with JQ_COLORS applied as jq 1.8.1's
+// jq_set_colors parses it: colon-separated runs of digits and ';' override the
+// defaults in order, a trailing empty field is ignored, the eighth field ends at
+// its first other character and anything after it is ignored, and any other
+// character in the first seven fields discards the whole variable.
 func jqColours() [8]string {
 	codes := jqDefault
 	spec := os.Getenv("JQ_COLORS")
-	if spec == "" {
-		return sgr(codes)
-	}
-	fields := strings.Split(spec, ":")
-	if fields[len(fields)-1] == "" {
-		fields = fields[:len(fields)-1]
-	}
-	if len(fields) > len(codes) {
-		fields = fields[:len(codes)]
-	}
-	for i, f := range fields {
-		if strings.Trim(f, "0123456789;") != "" {
+	for i := 0; ; i++ {
+		rest := strings.TrimLeft(spec, "0123456789;")
+		field := spec[:len(spec)-len(rest)]
+		if rest == "" || i+1 == len(codes) {
+			if field != "" {
+				codes[i] = field
+			}
+			break
+		}
+		if rest[0] != ':' {
 			return sgr(jqDefault)
 		}
-		codes[i] = f
+		codes[i] = field
+		spec = rest[1:]
 	}
 	return sgr(codes)
 }

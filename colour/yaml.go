@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
-	"regexp"
+	"strconv"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -20,40 +20,49 @@ const (
 	yqComment = "\x1b[90m"
 )
 
-// YAML 1.2 core schema int and float forms.
-var yamlNumber = regexp.MustCompile(`^(?:[-+]?[0-9]+|0o[0-7]+|0x[0-9a-fA-F]+|[-+]?(?:\.[0-9]+|[0-9]+(?:\.[0-9]*)?)(?:[eE][-+]?[0-9]+)?|[-+]?\.(?:inf|Inf|INF)|\.(?:nan|NaN|NAN))$`)
+// Kinds of scalar left open at the end of a line.
+const (
+	openNone  = 0
+	openBlock = '|'
+	openPlain = 'p'
+)
 
 // YAML writes in to w with yq's colours. It handles block mappings and
-// sequences, plain and quoted scalars, '|' and '>' blocks, single-line flow
-// collections, anchors, aliases and comments.
+// sequences, plain and quoted scalars (including multi-line ones), '|' and
+// '>' blocks, single-line flow collections, anchors, aliases and comments.
 func YAML(w io.Writer, in []byte) error {
 	if !validYAML(in) {
 		_, err := w.Write(in)
 		return err
 	}
 	var out bytes.Buffer
-	block := -1
+	// open is the scalar continuing onto the next line: a block or plain
+	// scalar owned by the node at column parent, or an unterminated quote.
+	open, parent := byte(openNone), 0
 	for _, line := range strings.SplitAfter(string(in), "\n") {
 		body := strings.TrimRight(line, "\r\n")
 		eol := line[len(body):]
 		trimmed := strings.TrimLeft(body, " ")
 		indent := len(body) - len(trimmed)
-		if block >= 0 {
-			if trimmed == "" || indent > block {
-				out.WriteString(body[:indent])
-				if trimmed != "" {
-					paint(&out, yqString, trimmed)
-				}
-				out.WriteString(eol)
-				continue
-			}
-			block = -1
-		}
 		out.WriteString(body[:indent])
-		if trimmed == "---" || trimmed == "..." || strings.HasPrefix(trimmed, "--- ") {
+		switch {
+		case open == '"' || open == '\'':
+			if end := quoteClose(trimmed, open); end < 0 {
+				paint(&out, yqString, trimmed)
+			} else {
+				paint(&out, yqString, trimmed[:end])
+				comment(&out, trimmed[end:])
+				open = openNone
+			}
+		case open != openNone && (trimmed == "" || indent > parent && (open == openBlock || trimmed[0] != '#')):
+			paint(&out, yqString, trimmed)
+		case trimmed == "---" || trimmed == "..." || strings.HasPrefix(trimmed, "--- "):
 			out.WriteString(trimmed)
-		} else if yamlNode(&out, trimmed) {
-			block = indent
+			open = openNone
+		default:
+			var col int
+			col, open = yamlNode(&out, trimmed)
+			parent = indent + col
 		}
 		out.WriteString(eol)
 	}
@@ -76,7 +85,7 @@ func validYAML(in []byte) bool {
 }
 
 func paint(out *bytes.Buffer, col, s string) {
-	if col == "" {
+	if col == "" || s == "" {
 		out.WriteString(s)
 		return
 	}
@@ -85,22 +94,25 @@ func paint(out *bytes.Buffer, col, s string) {
 	out.WriteString(reset)
 }
 
-// yamlNode colours one line's content after its indentation and reports
-// whether it opens a block scalar.
-func yamlNode(out *bytes.Buffer, s string) bool {
+// yamlNode colours one line's content after its indentation. It returns the
+// column, relative to s, of the innermost node (the last '-' or the key) and
+// the kind of scalar left open at the end of the line.
+func yamlNode(out *bytes.Buffer, s string) (int, byte) {
+	col, off := 0, 0
 	for strings.HasPrefix(s, "- ") || s == "-" {
 		n := len(s) - len(strings.TrimLeft(s[1:], " ")) // dash plus spaces
 		out.WriteString(s[:n])
-		s = s[n:]
+		col, off, s = off, off+n, s[n:]
 	}
 	if s == "" {
-		return false
+		return col, openNone
 	}
 	if s[0] == '#' {
 		paint(out, yqComment, s)
-		return false
+		return col, openNone
 	}
 	if k := keyEnd(s); k > 0 {
+		col = off
 		paint(out, yqKey, s[:k])
 		rest := s[k:]
 		colon := strings.IndexByte(rest, ':') + 1
@@ -110,7 +122,7 @@ func yamlNode(out *bytes.Buffer, s string) bool {
 		out.WriteString(rest[:len(rest)-len(value)])
 		s = value
 	}
-	return yamlValue(out, s)
+	return col, yamlValue(out, s)
 }
 
 // keyEnd returns the length of a mapping key at the start of s, or 0 when s is
@@ -143,8 +155,16 @@ func keyEnd(s string) int {
 // quoteEnd returns the index just past the quoted scalar starting s, or len(s)
 // when it is unterminated on this line.
 func quoteEnd(s string) int {
-	q := s[0]
-	for i := 1; i < len(s); i++ {
+	if end := quoteClose(s[1:], s[0]); end >= 0 {
+		return end + 1
+	}
+	return len(s)
+}
+
+// quoteClose returns the index just past the quote q closing a scalar whose
+// opening quote precedes s, or -1 when s does not close it.
+func quoteClose(s string, q byte) int {
+	for i := 0; i < len(s); i++ {
 		switch {
 		case q == '"' && s[i] == '\\':
 			i++
@@ -154,13 +174,14 @@ func quoteEnd(s string) int {
 			return i + 1
 		}
 	}
-	return len(s)
+	return -1
 }
 
-// yamlValue colours a scalar or flow collection with any trailing comment.
-func yamlValue(out *bytes.Buffer, s string) bool {
+// yamlValue colours a scalar or flow collection with any trailing comment and
+// returns the kind of scalar it leaves open.
+func yamlValue(out *bytes.Buffer, s string) byte {
 	if s == "" {
-		return false
+		return openNone
 	}
 	for s[0] == '&' || s[0] == '!' {
 		n := strings.IndexByte(s, ' ')
@@ -175,13 +196,13 @@ func yamlValue(out *bytes.Buffer, s string) bool {
 		v := strings.TrimLeft(s[n:], " ")
 		out.WriteString(s[n : len(s)-len(v)])
 		if s = v; s == "" {
-			return false
+			return openNone
 		}
 	}
 	switch s[0] {
 	case '#':
 		paint(out, yqComment, s)
-		return false
+		return openNone
 	case '|', '>':
 		n := strings.IndexByte(s, ' ')
 		if n < 0 {
@@ -189,21 +210,28 @@ func yamlValue(out *bytes.Buffer, s string) bool {
 		}
 		out.WriteString(s[:n])
 		comment(out, s[n:])
-		return true
+		return openBlock
 	case '[', '{':
 		flow(out, s)
-		return false
+		return openNone
 	}
-	end := len(s)
-	if s[0] == '"' || s[0] == '\'' {
-		end = quoteEnd(s)
-	} else if i := strings.Index(s, " #"); i >= 0 {
-		end = i
+	end, open := len(s), byte(openPlain)
+	switch s[0] {
+	case '"', '\'':
+		if end, open = quoteClose(s[1:], s[0])+1, openNone; end == 0 {
+			end, open = len(s), s[0]
+		}
+	case '*':
+		open = openNone
+	default:
+		if i := strings.Index(s, " #"); i >= 0 {
+			end, open = i, openNone
+		}
 	}
 	val := strings.TrimRight(s[:end], " ")
 	paint(out, scalarColour(val), val)
 	comment(out, s[len(val):])
-	return false
+	return open
 }
 
 // comment writes rest, colouring a trailing "# ..." comment.
@@ -225,15 +253,52 @@ func scalarColour(v string) string {
 		return yqAnchor
 	}
 	switch v {
-	case "null", "Null", "NULL", "~":
+	case "null", "Null", "NULL", "~", ".inf", ".Inf", ".INF", "-.inf", "-.Inf", "-.INF", ".nan", ".NaN", ".NAN":
 		return ""
 	case "true", "True", "TRUE", "false", "False", "FALSE":
 		return yqNumBool
 	}
-	if yamlNumber.MatchString(v) {
-		return yqNumBool
+	if col, ok := number(v); ok {
+		return col
 	}
 	return yqString
+}
+
+// number mirrors goccy/go-yaml v1.19.2 token.toNumber, which yq's lexer uses:
+// decimal ints and floats get the number colour; hex, octal (0o or a leading
+// 0) and binary ints are typed but yq leaves them uncoloured.
+func number(v string) (string, bool) {
+	if v == "" || v[0] == '_' || strings.Count(v, ".") > 1 {
+		return "", false
+	}
+	neg := v[0] == '-'
+	n := strings.ReplaceAll(strings.TrimPrefix(strings.TrimPrefix(v, "+"), "-"), "_", "")
+	base, col := 10, ""
+	switch {
+	case strings.HasPrefix(n, "0x"):
+		n, base = n[2:], 16
+	case strings.HasPrefix(n, "0o"):
+		n, base = n[2:], 8
+	case strings.HasPrefix(n, "0b"):
+		n, base = n[2:], 2
+	case strings.HasPrefix(n, "0") && len(n) > 1 && !strings.Contains(v, "."):
+		base = 8
+	case strings.Contains(v, "."):
+		if neg {
+			n = "-" + n
+		}
+		_, err := strconv.ParseFloat(n, 64)
+		return yqNumBool, err == nil
+	default:
+		col = yqNumBool
+	}
+	var err error
+	if neg {
+		_, err = strconv.ParseInt("-"+n, base, 64)
+	} else {
+		_, err = strconv.ParseUint(n, base, 64)
+	}
+	return col, err == nil
 }
 
 // flow colours a single-line flow collection: punctuation plain, keys and

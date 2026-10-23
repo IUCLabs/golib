@@ -65,6 +65,9 @@ func TestJQColors(t *testing.T) {
 		"1;31:":             "\x1b[1;31mnull\x1b[0m",
 		"x":                 "\x1b[0;90mnull\x1b[0m",
 		"0:0:0:0:0:0:0:0:z": "\x1b[0mnull\x1b[0m",
+		"1:0:0:0:0:0:0:0z!": "\x1b[1mnull\x1b[0m",
+		"1:0:0:0:0:0:0:z":   "\x1b[1mnull\x1b[0m",
+		"1:z:0":             "\x1b[0;90mnull\x1b[0m",
 	}
 	for env, want := range cases {
 		t.Setenv("JQ_COLORS", env)
@@ -91,6 +94,8 @@ data:
   password: "s3cr:et" # rotated
   ttl: 768h
   count: 0x1F
+  big: 1_000
+  exp: 1e3
   ratio: -.5
   on: True
   gone: ~
@@ -119,7 +124,9 @@ func TestYAML(t *testing.T) {
   <com># creds</>
   <key>password</>: <str>"s3cr:et"</> <com># rotated</>
   <key>ttl</>: <str>768h</>
-  <key>count</>: <num>0x1F</>
+  <key>count</>: 0x1F
+  <key>big</>: <num>1_000</>
+  <key>exp</>: <str>1e3</>
   <key>ratio</>: <num>-.5</>
   <key>on</>: <num>True</>
   <key>gone</>: ~
@@ -148,21 +155,56 @@ func TestYAML(t *testing.T) {
 
 func TestYAMLEdges(t *testing.T) {
 	cases := map[string]string{
-		"a: 1\r\nb:\r\n":        "<key>a</>: <num>1</>\r\n<key>b</>:\r\n",
-		"k #x: v\n":             "<str>k</> <com>#x: v</>\n",
-		"--- a\n":               "--- a\n",
-		"x: &anchor\n  y: 1\n":  "<key>x</>: <anc>&anchor</>\n  <key>y</>: <num>1</>\n",
-		"x: !tag\n":             "<key>x</>: !tag\n",
-		"x: [a] # c\n":          "<key>x</>: [<str>a</>] <com># c</>\n",
-		"x: |\n  a\ny: 2\n":     "<key>x</>: |\n  <str>a</>\n<key>y</>: <num>2</>\n",
-		"\"k\" : v\n":           "<key>\"k\"</> : <str>v</>\n",
-		"x: \"a\\\"b\"\n":       "<key>x</>: <str>\"a\\\"b\"</>\n",
-		"- [\"a\", \"b\": 1]\n": "- [<str>\"a\"</>, <key>\"b\"</>: <num>1</>]\n",
-		"x: >\n":                "<key>x</>: >\n",
+		"a: 1\r\nb:\r\n":           "<key>a</>: <num>1</>\r\n<key>b</>:\r\n",
+		"k #x: v\n":                "<str>k</> <com>#x: v</>\n",
+		"--- a\n":                  "--- a\n",
+		"x: &anchor\n  y: 1\n":     "<key>x</>: <anc>&anchor</>\n  <key>y</>: <num>1</>\n",
+		"x: !tag\n":                "<key>x</>: !tag\n",
+		"x: [a] # c\n":             "<key>x</>: [<str>a</>] <com># c</>\n",
+		"x: |\n  a\ny: 2\n":        "<key>x</>: |\n  <str>a</>\n<key>y</>: <num>2</>\n",
+		"\"k\" : v\n":              "<key>\"k\"</> : <str>v</>\n",
+		"x: \"a\\\"b\"\n":          "<key>x</>: <str>\"a\\\"b\"</>\n",
+		"- [\"a\", \"b\": 1]\n":    "- [<str>\"a\"</>, <key>\"b\"</>: <num>1</>]\n",
+		"x: >\n":                   "<key>x</>: >\n",
+		"- b: |\n    x\n  c: 2\n":  "- <key>b</>: |\n    <str>x</>\n  <key>c</>: <num>2</>\n",
+		"- - |\n    y\n  - z: 1\n": "- - |\n    <str>y</>\n  - <key>z</>: <num>1</>\n",
+		"- certs:\n    - pem: |\n        -----BEGIN CERTIFICATE-----\n        MIIB\n      ttl: 768h\n  n: 1\n": "- <key>certs</>:\n" +
+			"    - <key>pem</>: |\n        <str>-----BEGIN CERTIFICATE-----</>\n        <str>MIIB</>\n      <key>ttl</>: <str>768h</>\n  <key>n</>: <num>1</>\n",
+		"w: one two\n\n  42\n# c\nn: 1\n": "<key>w</>: <str>one two</>\n\n  <str>42</>\n<com># c</>\n<key>n</>: <num>1</>\n",
+		"q: 'it''s\n  ok: y' # c\n":       "<key>q</>: <str>'it''s</>\n  <str>ok: y'</> <com># c</>\n",
 	}
 	for in, want := range cases {
 		if got := render(t, yamlF, in); got != want {
 			t.Errorf("YAML(%q)\n got %q\nwant %q", in, got, want)
+		}
+	}
+}
+
+// vault -format=yaml (yaml.v2) folds long strings at 80 columns.
+func TestYAMLWrapped(t *testing.T) {
+	part := "policy grants read: on secret/data/foo policy grants read: on secret/data/foo"
+	in := "data:\n  warning: \"" + part + "\n    " + part + "\n    \\\"done\\\"\"\n  next: 1\n"
+	want := "<key>data</>:\n  <key>warning</>: <str>\"" + part + "</>\n    <str>" + part +
+		"</>\n    <str>\\\"done\\\"\"</>\n  <key>next</>: <num>1</>\n"
+	if got := render(t, yamlF, in); got != want {
+		t.Errorf("YAML mismatch\n got %q\nwant %q", got, want)
+	}
+}
+
+func TestYAMLNumbers(t *testing.T) {
+	cases := map[string]string{
+		"1_000": "<num>", "-.5": "<num>", "+1": "<num>", "1.0e+3": "<num>", "-1": "<num>",
+		"1e3": "<str>", "09": "<str>", "_1": "<str>", "1.2.3": "<str>", "+.inf": "<str>",
+		"99999999999999999999": "<str>", "1.5e400": "<str>",
+		"0o17": "", "012": "", "-012": "", "0x1F": "", "0b101": "", ".inf": "", "-.Inf": "", ".nan": "",
+	}
+	for v, tag := range cases {
+		want := "<key>k</>: " + tag + v
+		if tag != "" {
+			want += "</>"
+		}
+		if got := render(t, yamlF, "k: "+v+"\n"); got != want+"\n" {
+			t.Errorf("%s: got %q want %q", v, got, want)
 		}
 	}
 }

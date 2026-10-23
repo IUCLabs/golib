@@ -13,6 +13,7 @@ imports it inherits them.
 | --- | --- |
 | `git.unkin.net/unkin/golib/pg` | Postgres: DSN from the environment, pgxpool construction, read/write splitting across a primary and a replica, and the estate's migration runner. |
 | `git.unkin.net/unkin/golib/pg/pgtest` | A throwaway Postgres container for a consumer's own `_test.go` files. Test-only. |
+| `git.unkin.net/unkin/golib/colour` | jq-style JSON and yq-style YAML highlighting for CLI output, preserving the input byte for byte, plus the TTY/`NO_COLOR` check. |
 
 ### pg
 

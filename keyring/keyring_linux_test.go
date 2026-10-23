@@ -13,12 +13,12 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// open opens a test-unique keyring, skipping where the container's seccomp
-// profile blocks the keyctl syscalls.
+// open opens a test-unique keyring, skipping outside CI where keyctl is
+// unimplemented. Permission errors always fail: they are bugs, not absence.
 func open(t *testing.T) *Keyring {
 	t.Helper()
 	k, err := Open(fmt.Sprintf("golib-test:%s:%d", t.Name(), os.Getpid()))
-	if errors.Is(err, unix.ENOSYS) || errors.Is(err, unix.EPERM) || errors.Is(err, unix.EACCES) {
+	if errors.Is(err, unix.ENOSYS) && os.Getenv("CI") == "" {
 		t.Skipf("kernel keyring unavailable: %v", err)
 	}
 	if err != nil {
@@ -134,7 +134,7 @@ func TestKernelWrongSizedKeyIsReplaced(t *testing.T) {
 
 // Racing first users must all end up sealing under the one key that stays linked.
 func TestKernelConcurrentFirstSeal(t *testing.T) {
-	open(t) // skips where keyctl is blocked
+	open(t) // skips where keyctl is unavailable
 	const rounds, workers = 20, 8
 	for r := range rounds {
 		desc := fmt.Sprintf("golib-test:%s:%d:%d", t.Name(), os.Getpid(), r)
@@ -185,8 +185,12 @@ func TestKernelExternallyRevokedKeyIsReplaced(t *testing.T) {
 
 // Another application's dead key in the user keyring is not ours to unlink.
 func TestKernelForeignDeadKeySurvivesOpen(t *testing.T) {
-	open(t) // skips where keyctl is blocked
-	id, err := unix.AddKey("user", fmt.Sprintf("golib-test-foreign:%s:%d", t.Name(), os.Getpid()), []byte("x"), unix.KEY_SPEC_USER_KEYRING)
+	open(t) // skips where keyctl is unavailable
+	foreign := &Keyring{desc: fmt.Sprintf("golib-test-foreign:%s:%d", t.Name(), os.Getpid())}
+	if _, err := foreign.create(); err != nil {
+		t.Fatal(err)
+	}
+	id, _, err := foreign.lookup()
 	if err != nil {
 		t.Fatal(err)
 	}

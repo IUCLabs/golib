@@ -13,6 +13,7 @@ imports it inherits them.
 | --- | --- |
 | `git.unkin.net/unkin/golib/pg` | Postgres: DSN from the environment, pgxpool construction, read/write splitting across a primary and a replica, and the estate's migration runner. |
 | `git.unkin.net/unkin/golib/pg/pgtest` | A throwaway Postgres container for a consumer's own `_test.go` files. Test-only. |
+| `git.unkin.net/unkin/golib/keyring` | Encrypts secrets at rest with a key held in the Linux kernel user keyring, scoped to the current boot and uid. |
 
 ### pg
 
@@ -183,6 +184,25 @@ func TestSomething(t *testing.T) {
     ...
 }
 ```
+
+### keyring
+
+```go
+kr, err := keyring.Open("golib:vault-tools") // get-or-create the key
+sealed, err := kr.Seal(token)
+token, err := kr.Unseal(sealed)
+if errors.Is(err, keyring.ErrKeyUnavailable) {
+    // rebooted or Forget()-ed: log in again
+}
+```
+
+The key is 32 random bytes stored as a `user` key in the uid's user keyring
+(`@u`), so every login shell, terminal and systemd user service of that uid
+shares it until reboot. Its permissions grant the uid read access as well as the
+possessor, because processes whose session keyring does not link `@u` do not
+possess it. Data is AES-256-GCM in a versioned envelope; a missing, revoked or
+different key returns `ErrKeyUnavailable`, damaged data returns `ErrCorrupt`.
+`Forget` revokes the key. Non-Linux builds return `errors.ErrUnsupported`.
 
 ## Consuming
 

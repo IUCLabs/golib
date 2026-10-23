@@ -7,6 +7,7 @@ import (
 	"os"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -123,8 +124,59 @@ func TestKernelWrongSizedKeyIsReplaced(t *testing.T) {
 	if _, err := Open(k.desc); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := k.get(); err != nil {
+	if _, _, err := k.lookup(); err != nil {
 		t.Fatalf("key not replaced: %v", err)
+	}
+}
+
+// Racing first users must all end up sealing under the one key that stays linked.
+func TestKernelConcurrentFirstSeal(t *testing.T) {
+	open(t) // skips where keyctl is blocked
+	const rounds, workers = 20, 8
+	for r := range rounds {
+		desc := fmt.Sprintf("golib-test:%s:%d:%d", t.Name(), os.Getpid(), r)
+		sealed := make([][]byte, workers)
+		errs := make([]error, workers)
+		var wg sync.WaitGroup
+		for w := range workers {
+			wg.Go(func() {
+				k, err := Open(desc)
+				if err == nil {
+					sealed[w], err = k.Seal([]byte("secret"))
+				}
+				errs[w] = err
+			})
+		}
+		wg.Wait()
+		k := &Keyring{desc: desc}
+		t.Cleanup(func() { _ = k.Forget() })
+		for w := range workers {
+			if errs[w] != nil {
+				t.Fatalf("round %d worker %d: %v", r, w, errs[w])
+			}
+			if got, err := k.Unseal(sealed[w]); err != nil || string(got) != "secret" {
+				t.Fatalf("round %d worker %d: Unseal = %q, %v", r, w, got, err)
+			}
+		}
+	}
+}
+
+// A key revoked behind our back still blocks an exclusive link until unlinked.
+func TestKernelExternallyRevokedKeyIsReplaced(t *testing.T) {
+	k := open(t)
+	id, _, err := k.lookup()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unix.KeyctlInt(unix.KEYCTL_REVOKE, id, 0, 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	sealed, err := k.Seal([]byte("secret"))
+	if err != nil {
+		t.Fatalf("Seal after external revoke: %v", err)
+	}
+	if got, err := k.Unseal(sealed); err != nil || string(got) != "secret" {
+		t.Fatalf("Unseal = %q, %v", got, err)
 	}
 }
 

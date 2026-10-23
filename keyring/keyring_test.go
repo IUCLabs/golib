@@ -2,6 +2,7 @@ package keyring
 
 import (
 	"bytes"
+	"crypto/rand"
 	"errors"
 	"testing"
 )
@@ -67,5 +68,23 @@ func TestBadKeyLength(t *testing.T) {
 	copy(sealed[1:], fingerprint(short))
 	if _, err := unseal(short, sealed); !errors.Is(err, ErrKeyUnavailable) {
 		t.Fatalf("unseal err = %v, want ErrKeyUnavailable", err)
+	}
+}
+
+// The header must be bound as additional data: a valid GCM ciphertext under a
+// genuine header but without that binding is rejected.
+func TestUnsealRequiresHeaderAAD(t *testing.T) {
+	key := testKey(1)
+	gcm, err := newGCM(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := append([]byte{version1}, fingerprint(key)...)
+	nonce := make([]byte, nonceSize)
+	_, _ = rand.Read(nonce)
+	env = append(env, nonce...)
+	env = gcm.Seal(env, nonce, []byte("secret"), nil)
+	if _, err := unseal(key, env); !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("err = %v, want ErrCorrupt", err)
 	}
 }

@@ -29,12 +29,6 @@ const (
 	headerLen = 1 + fpSize + nonceSize
 )
 
-// Keyring seals and unseals data with the kernel-held key named by its
-// description.
-type Keyring struct {
-	desc string
-}
-
 func fingerprint(key []byte) []byte {
 	sum := sha256.Sum256(key)
 	return sum[:fpSize]

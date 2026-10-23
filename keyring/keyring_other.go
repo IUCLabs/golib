@@ -9,6 +9,9 @@ import (
 
 var errUnsupported = fmt.Errorf("keyring: kernel keyring requires linux: %w", errors.ErrUnsupported)
 
+// Keyring is a stub: the kernel key retention service is Linux-only.
+type Keyring struct{}
+
 // Open always fails: the kernel key retention service is Linux-only.
 func Open(string) (*Keyring, error) { return nil, errUnsupported }
 

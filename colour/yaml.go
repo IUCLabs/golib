@@ -129,10 +129,12 @@ func yamlNode(out *bytes.Buffer, s string) (int, byte) {
 // not a key/value pair.
 func keyEnd(s string) int {
 	end := 0
-	switch s[0] {
-	case '"', '\'':
+	switch {
+	case s[0] == '"' || s[0] == '\'':
 		end = quoteEnd(s)
-	case '[', '{', '&', '*', '!', '|', '>', '?', '%', '@', '`':
+	case s[0] == '?' && (len(s) == 1 || s[1] == ' '):
+		return 0
+	case strings.IndexByte("[{&*!|>%@`", s[0]) >= 0:
 		return 0
 	default:
 		for i := 0; i < len(s); i++ {

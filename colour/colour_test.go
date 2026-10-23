@@ -172,6 +172,8 @@ func TestYAMLEdges(t *testing.T) {
 			"    - <key>pem</>: |\n        <str>-----BEGIN CERTIFICATE-----</>\n        <str>MIIB</>\n      <key>ttl</>: <str>768h</>\n  <key>n</>: <num>1</>\n",
 		"w: one two\n\n  42\n# c\nn: 1\n": "<key>w</>: <str>one two</>\n\n  <str>42</>\n<com># c</>\n<key>n</>: <num>1</>\n",
 		"q: 'it''s\n  ok: y' # c\n":       "<key>q</>: <str>'it''s</>\n  <str>ok: y'</> <com># c</>\n",
+		"?q: ?v\n?n:\n  a: 1\n  b: |\n    x\nd: 2\n": "<key>?q</>: <str>?v</>\n<key>?n</>:\n  <key>a</>: <num>1</>\n" +
+			"  <key>b</>: |\n    <str>x</>\n<key>d</>: <num>2</>\n",
 	}
 	for in, want := range cases {
 		if got := render(t, yamlF, in); got != want {

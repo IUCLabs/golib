@@ -24,7 +24,7 @@ build:
 	go build ./...
 
 # Unit tests. The container-backed integration tests skip themselves under
-# -short, which is how CI runs them: the Kubernetes runners have no Docker.
+# -short, which is how CI runs them: the runners have no Docker.
 test:
 	go test -race -count=1 -short ./...
 
@@ -61,7 +61,7 @@ clean:
 	rm -f cover.out cover.filtered.out
 
 # Bump helpers — read the latest semver tag and create the next one. Consumers
-# pin the resulting v* tag with `go get git.unkin.net/unkin/golib@vX.Y.Z`.
+# pin the resulting v* tag with `go get github.com/IUCLabs/golib@vX.Y.Z`.
 _LATEST := $(shell git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | head -1)
 _BASE   := $(if $(_LATEST),$(_LATEST),v0.0.0)
 _MAJ    := $(shell echo $(_BASE) | sed 's/^v//' | cut -d. -f1)

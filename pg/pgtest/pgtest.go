@@ -2,8 +2,8 @@
 // tests. Import it only from _test.go files so testcontainers never reaches a
 // production binary.
 //
-// The estate's CI runs on Kubernetes with no Docker socket, so tests that need
-// a container must skip themselves under -short. SkipIfShort does exactly that,
+// CI without a Docker socket runs tests with -short, so tests that need a
+// container must skip themselves under -short. SkipIfShort does exactly that,
 // and StartPostgres reports a plain error when no container runtime is
 // reachable, leaving it to the caller whether that is a skip or a failure.
 package pgtest
@@ -20,7 +20,7 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// Image is the Postgres the estate targets; every service runs the same major.
+// Image is the Postgres image the container runs.
 const Image = "postgres:17-alpine"
 
 const (

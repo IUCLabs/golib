@@ -41,8 +41,8 @@ var (
 // DSNFromEnv builds a libpq/pgx connection string from the environment.
 //
 // prefix is prepended to every custom variable name, so a service can namespace
-// its settings ("ENCAPI_" reads ENCAPI_DBHOST); an empty prefix reads the bare
-// names the estate's services already use (DBHOST, DBPORT, ...).
+// its settings ("MYAPP_" reads MYAPP_DBHOST); an empty prefix reads the bare
+// names (DBHOST, DBPORT, ...).
 //
 // Precedence, highest first:
 //
@@ -161,7 +161,7 @@ func connPartsFromEnv(prefix string) (connParts, error) {
 	return p, nil
 }
 
-// DSN renders the estate's standard connection string. User and password are
+// DSN renders the standard connection string. User and password are
 // percent-escaped, so a password containing "@" or "/" does not truncate the
 // host; for values without reserved characters the result is byte-identical to
 // the fmt.Sprintf builders this replaces.

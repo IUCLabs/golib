@@ -49,11 +49,11 @@ func TestDSNFromEnv(t *testing.T) {
 			name:   "bare custom vars with an empty prefix",
 			prefix: "",
 			env: map[string]string{
-				"DBHOST": "pg", "DBPORT": "5432", "DBUSER": "encapi",
-				"DBPASS": "encapi", "DBNAME": "encapi", "DBSSL": "disable",
+				"DBHOST": "pg", "DBPORT": "5432", "DBUSER": "myapp",
+				"DBPASS": "myapp", "DBNAME": "myapp", "DBSSL": "disable",
 			},
 			// Byte-identical to the fmt.Sprintf builder this replaces.
-			want: "postgres://encapi:encapi@pg:5432/encapi?sslmode=disable",
+			want: "postgres://myapp:myapp@pg:5432/myapp?sslmode=disable",
 		},
 		{
 			name:   "libpq vars fill in",

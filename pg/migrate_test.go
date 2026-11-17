@@ -132,18 +132,18 @@ func (f *fakeDB) discardCount() int {
 	return f.discards
 }
 
-// arrproxy pinned its advisory lock key as a literal derived from
-// FNV-1a/64("arrproxy-migrations"). LockKey must reproduce it exactly, or
-// adopting this package would silently stop excluding the old deployment.
-func TestLockKey_MatchesTheEstatesPinnedKey(t *testing.T) {
-	const arrproxyKey int64 = 7816645656172167846
-	if got := LockKey("arrproxy-migrations"); got != arrproxyKey {
-		t.Fatalf("LockKey(%q) = %d, want %d", "arrproxy-migrations", got, arrproxyKey)
+// A service that hardcoded its advisory lock key as FNV-1a/64 of its lock name
+// must keep getting the same key from LockKey, or adopting this package would
+// silently stop excluding the old deployment.
+func TestLockKey_MatchesPinnedKey(t *testing.T) {
+	const pinnedKey int64 = -8597821083387989636
+	if got := LockKey("myapp-migrations"); got != pinnedKey {
+		t.Fatalf("LockKey(%q) = %d, want %d", "myapp-migrations", got, pinnedKey)
 	}
 }
 
 func TestLockKey_IsFNV1a64(t *testing.T) {
-	for _, name := range []string{"", "encapi-migrations", "a much longer lock name"} {
+	for _, name := range []string{"", "myapp-migrations", "a much longer lock name"} {
 		h := fnv.New64a()
 		if _, err := h.Write([]byte(name)); err != nil {
 			t.Fatalf("hash: %v", err)
@@ -157,7 +157,7 @@ func TestLockKey_IsFNV1a64(t *testing.T) {
 // Distinct names must not collide, or two services sharing a cluster would
 // serialise against each other by accident.
 func TestLockKey_DistinctNamesDistinctKeys(t *testing.T) {
-	if LockKey("encapi-migrations") == LockKey("artifactapi-migrations") {
+	if LockKey("myapp-migrations") == LockKey("otherapp-migrations") {
 		t.Fatal("two different lock names produced the same key")
 	}
 }

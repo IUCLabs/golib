@@ -9,8 +9,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"git.unkin.net/unkin/golib/pg"
-	"git.unkin.net/unkin/golib/pg/pgtest"
+	"github.com/IUCLabs/golib/pg"
+	"github.com/IUCLabs/golib/pg/pgtest"
 )
 
 // migrations is a two-file set exercising the things the runner promises:

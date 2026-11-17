@@ -1,4 +1,4 @@
-module git.unkin.net/unkin/golib
+module github.com/IUCLabs/golib
 
 go 1.25.0
 

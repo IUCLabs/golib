@@ -10,7 +10,7 @@ COVER_MIN := 90
 # container-backed integration tests, which the gate deliberately does not run.
 COVER_EXCLUDE := /pg/pgtest/
 
-.PHONY: all build test test-all cover vet fmt lint tidy clean pre-commit patch minor major _tag
+.PHONY: all build test test-all cover vet fmt lint tidy clean pre-commit patch minor major
 
 all: build
 
@@ -60,25 +60,20 @@ tidy:
 clean:
 	rm -f cover.out cover.filtered.out
 
-# Bump helpers — read the latest semver tag and create the next one. Consumers
-# pin the resulting v* tag with `go get github.com/IUCLabs/golib@vX.Y.Z`.
-_LATEST := $(shell git tag --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | head -1)
-_BASE   := $(if $(_LATEST),$(_LATEST),v0.0.0)
-_MAJ    := $(shell echo $(_BASE) | sed 's/^v//' | cut -d. -f1)
-_MIN    := $(shell echo $(_BASE) | sed 's/^v//' | cut -d. -f2)
-_PAT    := $(shell echo $(_BASE) | sed 's/^v//' | cut -d. -f3)
+DEFAULT_BRANCH ?= main
 
-patch:
-	@NEW=v$(_MAJ).$(_MIN).$(shell expr $(_PAT) + 1); \
-	git tag $$NEW && echo "Tagged $$NEW" && $(MAKE) _tag TAG=$$NEW
-
-minor:
-	@NEW=v$(_MAJ).$(shell expr $(_MIN) + 1).0; \
-	git tag $$NEW && echo "Tagged $$NEW" && $(MAKE) _tag TAG=$$NEW
-
-major:
-	@NEW=v$(shell expr $(_MAJ) + 1).0.0; \
-	git tag $$NEW && echo "Tagged $$NEW" && $(MAKE) _tag TAG=$$NEW
-
-_tag:
-	git push origin $(TAG)
+# Publish the release with generated notes, then push the tag; no workflow
+# fills the release, so it is not drafted.
+patch minor major:
+	@git fetch --quiet --tags origin $(DEFAULT_BRANCH)
+	@test "$$(git branch --show-current)" = "$(DEFAULT_BRANCH)" || { echo "ERROR: not on $(DEFAULT_BRANCH)"; exit 1; }
+	@test -z "$$(git status --porcelain)" || { echo "ERROR: working tree not clean"; exit 1; }
+	@test "$$(git rev-parse HEAD)" = "$$(git rev-parse origin/$(DEFAULT_BRANCH))" || { echo "ERROR: HEAD is not origin/$(DEFAULT_BRANCH)"; exit 1; }
+	@LATEST=$$(git tag --list 'v*' --sort=-v:refname | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$$' | head -1); \
+	NEW=$$(echo "$${LATEST:-v0.0.0}" | sed 's/^v//' | awk -F. -v b=$@ '{ \
+		if (b == "major") print "v" ($$1+1) ".0.0"; \
+		else if (b == "minor") print "v" $$1 "." ($$2+1) ".0"; \
+		else print "v" $$1 "." $$2 "." ($$3+1) }'); \
+	SHA=$$(git rev-parse HEAD); \
+	gh release create "$$NEW" --target "$$SHA" --generate-notes --title "$$NEW" || exit 1; \
+	git push origin "$$SHA:refs/tags/$$NEW" || { gh release delete "$$NEW" --yes; exit 1; }

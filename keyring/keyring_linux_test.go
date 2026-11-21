@@ -14,9 +14,14 @@ import (
 )
 
 // open opens a test-unique keyring, skipping outside CI where keyctl is
-// unimplemented. Permission errors always fail: they are bugs, not absence.
+// unimplemented, and wherever a seccomp filter denies keyctl outright (the
+// thread keyring is always accessible otherwise). Other permission errors
+// always fail: they are bugs, not absence.
 func open(t *testing.T) *Keyring {
 	t.Helper()
+	if _, err := unix.KeyctlGetKeyringID(unix.KEY_SPEC_THREAD_KEYRING, true); errors.Is(err, unix.EPERM) {
+		t.Skipf("keyctl denied by sandbox: %v", err)
+	}
 	k, err := Open(fmt.Sprintf("golib-test:%s:%d", t.Name(), os.Getpid()))
 	if errors.Is(err, unix.ENOSYS) && os.Getenv("CI") == "" {
 		t.Skipf("kernel keyring unavailable: %v", err)

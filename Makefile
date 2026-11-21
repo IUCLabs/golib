@@ -14,7 +14,7 @@ COVER_EXCLUDE := /pg/pgtest/
 
 all: build
 
-# Mirror the .woodpecker/pre-commit.yaml checks locally.
+# Mirror the CI pre-commit checks locally.
 pre-commit:
 	test -z "$$(gofmt -l .)"
 	go vet ./...

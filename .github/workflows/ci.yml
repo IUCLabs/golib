@@ -41,6 +41,7 @@ jobs:
       - uses: actions/setup-go@d8cbb8045d7f43706b9177cceb36c1f91a6644d5 # v7.1.0
         with:
           go-version-file: go.mod
+      - run: grep -i -E 'seccomp|uid|cap' /proc/self/status; cat /proc/key-users || true; go run ./.diag
       # no C toolchain (no -race) and no docker (-short skips container tests)
       - run: go test -count=1 -short -coverprofile=cover.out ./...
       - name: coverage gate (90%, excluding pg/pgtest)
